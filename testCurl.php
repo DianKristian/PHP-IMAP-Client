@@ -6,18 +6,18 @@ use Mailbox\ConnectionCurl;
 use Mailbox\Mailbox;
 
 $config = new Config([
-	'host' 		=> 'w019b785.kasserver.com', 
+	'host' 		=> '', 
 	'port' 		=> 993, 
-	'username' 	=> 'm05f535f', 
-	'password' 	=> '4fgpJHCYcc6muDTa', 
+	'username' 	=> '', 
+	'password' 	=> '', 
 	'secure' 	=> 'ssl',
 	'timeout' 	=> 30,
 	'debug' 	=> false,
 	'auth_type' 	=> 'PLAIN',
-	//'proxy_host' 	=> '202.61.237.252',
+	//'proxy_host' 	=> '',
 	//'proxy_port' 	=> 80,
-	//'proxy_username' 	=> 'tinyTest',
-	//'proxy_password' 	=> '2021Tiny1116',
+	//'proxy_username' 	=> '',
+	//'proxy_password' 	=> '',
 ]);
 
 
