@@ -12,7 +12,7 @@ $config = new Config([
 	'password' 	=> '', 
 	'secure' 	=> 'ssl',
 	'timeout' 	=> 30,
-	'debug' 	=> false,
+	'debug' 	=> true,
 	'auth_type' 	=> 'PLAIN',
 	//'proxy_host' 	=> '',
 	//'proxy_port' 	=> 80,
@@ -37,7 +37,7 @@ try {
 				$mailbox->createFolder($str);
 			endif;
 			$folders = $mailbox->getFolders();
-			//$envelope = $mailbox->getEnvelope($uid);
+			$envelope = $mailbox->getEnvelope($uid);
 			//$replyto = $mailbox->getReplyTo($uid);
 			//$from = $mailbox->getFrom($uid);
 			//$subject = $mailbox->getSubject($uid);
@@ -93,7 +93,7 @@ try {
 			$uid,
 			//$struct,
 			$folders,
-			//$envelope,
+			$envelope,
 			//$replyto,
 			//$from,
 			//$subject,
