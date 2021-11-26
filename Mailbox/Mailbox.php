@@ -261,8 +261,8 @@ class Mailbox {
 	// (Creates a folder e.g. INBOX/Folder1))
 	public function createFolder(string $folder) {
 		return $this->connection->command(sprintf(
-			'CREATE "%s/%s"', 
-			$this->connection->toUTF7Imap($this->folder), 
+			'CREATE "%s"', 
+			//$this->connection->toUTF7Imap($this->folder), 
 			$this->connection->toUTF7Imap($folder)
 		));
 	}
@@ -278,7 +278,7 @@ class Mailbox {
 	public function getMessages() {
 		$this->select();
 		if (false === $this->connection->command('UID SEARCH ALL')):
-			throw new Error($this->connection->getErrorText());
+			throw new \Error($this->connection->getErrorText());
 		endif;
 		return $this->connection->getResults();
 	}
@@ -295,7 +295,7 @@ class Mailbox {
 			$field = 'UID';
 			$command = sprintf('FETCH %d (%s)', $sequenceNumber, $field);
 			if (false === $this->connection->command($command)):
-				throw new Error($this->connection->getErrorText());
+				throw new \Error($this->connection->getErrorText());
 			endif;
 			$result = $this->connection->getResults();
 			if (false === empty($result)):
@@ -331,7 +331,7 @@ class Mailbox {
 			$field = $extensible? 'BODYSTRUCTURE' : 'BODY';
 			$command = sprintf('UID FETCH %d %s', $uid, $field);
 			if (false === $this->connection->command($command)):
-				throw new Error($this->connection->getErrorText());
+				throw new \Error($this->connection->getErrorText());
 			endif;
 			$result = $this->connection->getResults();
 			if (false === empty($result)):
@@ -395,7 +395,7 @@ class Mailbox {
 			$field = 'ENVELOPE';
 			$command = sprintf('UID FETCH %d %s', $uid, $field);
 			if (false === $this->connection->command($command)):
-				throw new Error($this->connection->getErrorText());
+				throw new \Error($this->connection->getErrorText());
 			endif;
 			$result = $this->connection->getResults();
 			if (false === empty($result)):
