@@ -43,12 +43,35 @@ class Mailbox {
 		if ($this->connection->getSelectedFolder() === $this->folder):
 			return true;
 		endif;
-		$command = sprintf('%s "%s"', $this->readonly ? 'EXAMINE' : 'SELECT', $this->connection->toUTF7Imap($this->folder));
-		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
+		$folder = $this->folder;
+		
+		$isUTF8Supported = false;
+		if (isset($this->capabilities['UTF8'])):
+			if (in_array('ACCEPT', $this->capabilities['UTF8'])):
+				$isUTF8Supported = true;
+			elseif (in_array('ALL', $this->capabilities['UTF8'])):
+				$isUTF8Supported = true;
+			elseif (in_array('ONLY', $this->capabilities['UTF8'])):
+				$isUTF8Supported = true;
+			endif;
 		endif;
-		$this->status = array_merge($this->status, $this->connection->getResults());
+		if (false === $isUTF8Supported):
+			$folder = $this->connection->toUTF7Imap($folder);
+		endif;
+		$command = sprintf('%s "%s"', $this->readonly ? 'EXAMINE' : 'SELECT', $folder);
+		if (false === $this->connection->command($command)):
+			throw new \Error($this->connection->errorText);
+		endif;
+		$this->status = array_merge($this->status, $this->connection->results);
 		return true;
+	}
+	
+	
+	/**
+	 * 
+	**/
+	public function getFolder() {
+		return $this->folder;
 	}
 	
 	
@@ -89,17 +112,17 @@ class Mailbox {
 		if (false === $this->connection->command('EXPUNGE')):
 			return false;
 		endif;
-		$result = $this->connection->getResults();
-		$count = count($result['EXPUNGE']);
-		for ($i = 0; $i < $count; ++$i):
-			$sequence = $result['EXPUNGE'][$i];
-			if (false === isset($this->uids[$sequence])):
-				continue;
-			endif;
-			$uid = $this->uids[$sequence];
-			unset($this->uids[$sequence]);
-			unset($this->messages[$uid]);
-		endfor;
+		if (isset($this->connection->results['EXPUNGE']) && is_array($this->connection->results['EXPUNGE'])):
+			$count = count($this->connection->results['EXPUNGE']);
+			for ($i = 0; $i < $count; ++$i):
+				$sequence = $this->connection->results['EXPUNGE'][$i];
+				if (isset($this->uids[$sequence])):
+					$uid = $this->uids[$sequence];
+					unset($this->uids[$sequence]);
+					unset($this->messages[$uid]);
+				endif;
+			endfor;
+		endif;
 		return true;
 	}
 	
@@ -172,10 +195,9 @@ class Mailbox {
 		endif;
 		$command = sprintf('%sSEARCH %s', $returnUid ? 'UID ' : '', $string);
 		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
+			return false;
 		endif;
-		$result = $this->connection->getResults();
-		return isset($result['SEARCH']) ? $result['SEARCH'] : [];
+		return isset($this->connection->results['SEARCH']) ? $this->connection->results['SEARCH'] : [];
 	}
 	
 	
@@ -184,14 +206,22 @@ class Mailbox {
 	 * @params int
 	 * @return string
 	 */
-	public function getInternalDate(string $uid) {
+	public function getInternalDate(int $uid) {
 		$this->select();
 		$field = 'INTERNALDATE';
 		$command = sprintf('UID FETCH %d %s', $uid, $field);
 		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
+			throw new \Error($this->connection->errorText);
 		endif;
-		$result = $this->connection->getResults();
+		$sequenceNumber = array_search($uid, $this->uids);
+		if (false === $sequenceNumber):
+			return false;
+		endif;
+		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+			throw new \Error('Oops! Something wrong with the results');
+		endif;
+		var_dump($this->connection->results['FETCH']);
+		$result = $this->connection->results;
 		if (empty($result)):
 			return false;
 		endif;
@@ -210,29 +240,14 @@ class Mailbox {
 		$field = 'RFC822.SIZE';
 		$command = sprintf('UID FETCH %d %s', $uid, $field);
 		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
+			throw new \Error($this->connection->errorText);
 		endif;
-		$result = $this->connection->getResults();
+		$result = $this->connection->results;
 		if (empty($result)):
 			return false;
 		endif;
 		$result = array_shift($result);
 		return $result[$field];
-	}
-	
-	
-	/**
-	 * Copies the specified message(s) to the end of the specified destination mailbox.
-	 * The flags and internal date of the message(s) SHOULD be preserved, and the Recent flag SHOULD 
-	 * be set, in the copy.
-	 * @param int|string sequence set (ex. 2:4)
-	 * @param string mailbox name
-	 * @return bool
-	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.4.7
-	 */
-	public function copy(int $uid, string $newFolder):bool {
-		$this->select();
-		return $this->connection->command(sprintf('UID COPY %d "%s"', $uid, $this->connection->toUTF7Imap($newFolder)));
 	}
 	
 	
@@ -275,12 +290,71 @@ class Mailbox {
 	/**
 	 * Returns all message UIDs;
 	**/
-	public function getMessages() {
+	public function getMessages():array {
 		$this->select();
 		if (false === $this->connection->command('UID SEARCH ALL')):
-			throw new \Error($this->connection->getErrorText());
+			throw new \Error($this->connection->errorText);
 		endif;
-		return $this->connection->getResults();
+		$results = [];
+		if (isset($this->connection->results['SEARCH']) && is_array($this->connection->results['SEARCH'])):
+			$result = $this->connection->results['SEARCH'];
+		endif;
+		return $result;
+	}
+	
+	
+	/**
+	 * Copies the specified message(s) to the end of the specified destination mailbox.
+	 * The flags and internal date of the message(s) SHOULD be preserved, and the Recent flag SHOULD 
+	 * be set, in the copy.
+	 * @param int|string sequence set (ex. 2:4)
+	 * @param string mailbox name
+	 * @return bool
+	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.4.7
+	 */
+	public function copyMessage(int $uid, string $newFolder):bool {
+		$this->select();
+		$isUTF8Supported = false;
+		$capabilities = $this->connection->getCapability('UTF8');
+		if (is_array($capabilities)):
+			if (in_array('ACCEPT', $capabilities)):
+				$isUTF8Supported = true;
+			elseif (in_array('ALL', $capabilities)):
+				$isUTF8Supported = true;
+			elseif (in_array('ONLY', $capabilities)):
+				$isUTF8Supported = true;
+			endif;
+		endif;
+		if (false === $isUTF8Supported):
+			$newFolder = $this->connection->toUTF7Imap($newFolder);
+		endif;
+		return $this->connection->command(sprintf('UID COPY %d "%s"', $uid, $newFolder));
+	}
+	
+	
+	/**
+	 * (By UID or message ID)
+	 */
+	public function moveMessage(int $uid, string $newFolder) {
+		if (false === $this->copyMessage($uid, $newFolder)):
+			return false;
+		endif;
+		return $this->deleteMessage($uid);
+	}
+	
+	
+	/**
+	 * (By UID or message ID)
+	 */
+	public function deleteMessage(int $uid) {
+		if (false === $this->addFlags($uid, self::FLAG_DELETED)):
+			return false;
+		endif;
+		if (false === $this->expunge()):
+			$this->removeFlags($uid, self::FLAG_DELETED);
+			return false;
+		endif;
+		return true;
 	}
 	
 	
@@ -292,20 +366,14 @@ class Mailbox {
 	public function getUid(int $sequenceNumber):int {
 		if (false === isset($this->uids[$sequenceNumber])):
 			$this->select();
-			$field = 'UID';
-			$command = sprintf('FETCH %d (%s)', $sequenceNumber, $field);
+			$command = sprintf('FETCH %d UID', $sequenceNumber);
 			if (false === $this->connection->command($command)):
-				throw new \Error($this->connection->getErrorText());
+				return false;
 			endif;
-			$result = $this->connection->getResults();
-			if (false === empty($result)):
-				$result = array_shift($result);
-				$result = $result[$field];
-				$this->uids[$sequenceNumber] = $result;
-			else:
-				$result = false;
+			if (false === isset($this->connection->results['FETCH'][$sequenceNumber]['UID'])):
+				throw new \Error('Oops! Something wrong with the results');
 			endif;
-			return $result;
+			$this->uids[$sequenceNumber] = $this->connection->results['FETCH'][$sequenceNumber]['UID'];
 		endif;
 		return $this->uids[$sequenceNumber];
 	}
@@ -328,51 +396,31 @@ class Mailbox {
 	public function getStructure(int $uid, bool $extensible = false) {
 		if (false === isset($this->messages[$uid]['structure'])):
 			$this->select();
-			$field = $extensible? 'BODYSTRUCTURE' : 'BODY';
+			$field = $extensible ? 'BODYSTRUCTURE' : 'BODY';
 			$command = sprintf('UID FETCH %d %s', $uid, $field);
 			if (false === $this->connection->command($command)):
-				throw new \Error($this->connection->getErrorText());
+				return false;
 			endif;
-			$result = $this->connection->getResults();
-			if (false === empty($result)):
-				$result = array_shift($result);
-				$result = $result[$field];
-				if ($field === 'BODYSTRUCTURE'):
-					$this->normalizeStructure($result);
-					$this->messages[$uid]['structure'] = $result;
-				endif;
+			if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+				throw new \Error('Oops! Something wrong with the results');
 			endif;
-			return $result;
+			$results = array_shift($this->connection->results['FETCH']);
+			if (false === (isset($results[$field]) && is_object($results[$field]))):
+				throw new \Error('Oops! Something wrong with the results');
+			endif;
+			if ($field === 'BODY'):
+				return $results[$field];
+			endif;
+			$this->messages[$uid]['structure'] = $results[$field];
 		endif;
 		return $this->messages[$uid]['structure'];
 	}
 	
 	
 	/**
-	 * Some server results using lowercase type and subtype.
-	 * Function normalize string to be an uppercase string
-	 * @return void
-	 */
-	protected function normalizeStructure(&$structure):void {
-		if (isset($structure['type'])):
-			$structure['type'] = strtoupper($structure['type']);
-		endif;
-		if (isset($structure['subtype'])):
-			$structure['subtype'] = strtoupper($structure['subtype']);
-		endif;
-		if (isset($structure['parts'])):
-			$count = count($structure['parts']);
-			for ($i = 0; $i < $count; ++$i):
-				$this->normalizeStructure($structure['parts'][$i]);
-			endfor;
-		endif;
-	}
-	
-	
-	/**
 	 * Get all envelope information for given message in selected folder
 	 * @param int message UID
-	 * @return array with fields:
+	 * @return object with fields:
 	 *  date: string
 	 *  subject: string
 	 *  from: array "mail addresses"
@@ -389,21 +437,21 @@ class Mailbox {
 	 *  mailbox string
 	 *  host string
 	 */
-	public function getEnvelope(int $uid):array {
+	public function getEnvelope(int $uid):\stdClass {
 		if (false === isset($this->messages[$uid]['envelope'])):
 			$this->select();
-			$field = 'ENVELOPE';
-			$command = sprintf('UID FETCH %d %s', $uid, $field);
+			$command = sprintf('UID FETCH %d ENVELOPE', $uid);
 			if (false === $this->connection->command($command)):
-				throw new \Error($this->connection->getErrorText());
+				return false;
 			endif;
-			$result = $this->connection->getResults();
-			if (false === empty($result)):
-				$result = array_shift($result);
-				$result = $result[$field];
-				$this->messages[$uid]['envelope'] = $result;
+			if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+				throw new \Error('Oops! Something wrong with the results');
 			endif;
-			return $result;
+			$results = array_shift($this->connection->results['FETCH']);
+			if (false === (isset($results['ENVELOPE']) && is_object($results['ENVELOPE']))):
+				throw new \Error('Oops! Something wrong with the results');
+			endif;
+			$this->messages[$uid]['envelope'] = $results['ENVELOPE'];
 		endif;
 		return $this->messages[$uid]['envelope'];
 	}
@@ -414,9 +462,9 @@ class Mailbox {
 	 * @param int message UID
 	 * @return array see: getEnvelope method
 	 */
-	public function getReplyTo(int $uid) {
-		$result = $this->getEnvelope($uid);
-		return $result[$this->connection::FIELD_ENVELOPE_REPLYTO];
+	public function getReplyTo(int $uid):array {
+		$envelope = $this->getEnvelope($uid);
+		return $envelope->reply_to;
 	}
 	
 	
@@ -425,9 +473,9 @@ class Mailbox {
 	 * @param int message UID
 	 * @return array see: getEnvelope method
 	 */
-	public function getFrom(int $uid) {
+	public function getFrom(int $uid):array {
 		$envelope = $this->getEnvelope($uid);
-		return $envelope[$this->connection::FIELD_ENVELOPE_FROM];
+		return $envelope->from;
 	}
 	
 	
@@ -438,55 +486,110 @@ class Mailbox {
 	 */
 	public function getSubject(int $uid) {
 		$envelope = $this->getEnvelope($uid);
-		return (string)$envelope[$this->connection::FIELD_ENVELOPE_SUBJECT];
+		return $envelope->subject;
 	}
 	
 	
-	// Output only the html Body if exist
-	public function getHtmlBody(int $uid, bool $peek = false):string {
+	/**
+	 * 
+	 */
+	public function getBody(int $uid, string $section = ''):string {
+		$field = sprintf('BODY[%s]', $section);
+		$command = sprintf('UID FETCH %d %s', $uid, $field);
+		if (false === $this->connection->command($command)):
+			return '';
+		endif;
+		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+			throw new \Error('Oops! Something wrong with the results');
+		endif;
+		$results = array_shift($this->connection->results['FETCH']);
+		if (false === (isset($results[$field]) && is_string($results[$field]))):
+			throw new \Error('Oops! Something wrong with the results');
+		endif;
+		return trim($results[$field]);
+	}
+	
+	
+	/**
+	 * Output only the html Body if exist
+	**/
+	public function getHtmlBody(int $uid):string {
 		$structure = $this->getStructure($uid, true);
 		if (empty($structure)):
 			return '';
 		endif;
-		$section = $this->getStructureSection($structure, 'subtype', 'HTML');
-		$section = array_shift($section);
-		if (false === isset($section)):
+		$structure = $this->getStructureSection($structure, 'subtype', 'html');
+		if (empty($structure)):
 			return '';
 		endif;
-		$field = $peek ? 'BODY.PEEK[%s]' : 'BODY[%s]';
-		$field = sprintf($field, $section['section']);
-		$command = sprintf('UID FETCH %d %s', $uid, $field);
-		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
+		$structure = array_shift($structure);
+		if (false === isset($structure->section)):
+			$structure->section = 1;
 		endif;
-		$field = sprintf('BODY[%s]', $section['section']);
-		$result = $this->connection->getResults();
-		$result = array_shift($result);
-		return $result[$field];
+		$result = $this->getBody($uid, $structure->section);
+		if (false === empty($structure->encoding)):
+			$structure->encoding = strtolower($structure->encoding);
+			if ($structure->encoding === 'base64'):
+				$result = base64_decode($result);
+			elseif ($structure->encoding === 'quoted-printable'):
+				$result = quoted_printable_decode($result);
+			endif;
+		endif;
+		if (false === empty($structure->parameter) && is_array($structure->parameter)):
+			$count = count($structure->parameter);
+			for ($i = 0; $i < $count; ++$i):
+				if (strtolower($structure->parameter[$i]->attribute) !== 'charset'):
+					continue;
+				endif;
+				if (strtolower($structure->parameter[$i]->value) === 'utf-8'):
+					continue;
+				endif;
+				$result = mb_convert_encoding($result, 'UTF-8', $structure->parameter[$i]->value);
+				break;
+			endfor;
+		endif;
+		return $result;
 	}
 	
-	
-	// Output only the text body if exist
+	/**
+	 * Output only the text body if exist
+	**/
 	public function getTextBody(int $uid, bool $peek = false):string {
 		$structure = $this->getStructure($uid, true);
 		if (empty($structure)):
 			return '';
 		endif;
-		$section = $this->getStructureSection($structure, 'subtype', 'PLAIN');
-		$section = array_shift($section);
-		if (false === isset($section)):
+		$structure = $this->getStructureSection($structure, 'subtype', 'plain');
+		if (empty($structure)):
 			return '';
 		endif;
-		$field = $peek ? 'BODY.PEEK[%s]' : 'BODY[%s]';
-		$field = sprintf($field, $section['section']);
-		$command = sprintf('UID FETCH %d %s', $uid, $field);
-		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
+		$structure = array_shift($structure);
+		if (false === isset($structure->section)):
+			$structure->section = 1;
 		endif;
-		$field = sprintf('BODY[%s]', $section['section']);
-		$result = $this->connection->getResults();
-		$result = array_shift($result);
-		return $result[$field];
+		$result = $this->getBody($uid, $structure->section);
+		if (false === empty($structure->encoding)):
+			$structure->encoding = strtolower($structure->encoding);
+			if ($structure->encoding === 'base64'):
+				$result = base64_decode($result);
+			elseif ($structure->encoding === 'quoted-printable'):
+				$result = quoted_printable_decode($result);
+			endif;
+		endif;
+		if (false === empty($structure->parameter) && is_array($structure->parameter)):
+			$count = count($structure->parameter);
+			for ($i = 0; $i < $count; ++$i):
+				if (strtolower($structure->parameter[$i]->attribute) !== 'charset'):
+					continue;
+				endif;
+				if (strtolower($structure->parameter[$i]->value) === 'utf-8'):
+					continue;
+				endif;
+				$result = mb_convert_encoding($result, 'UTF-8', $structure->parameter[$i]->value);
+				break;
+			endfor;
+		endif;
+		return $result;
 	}
 	
 	
@@ -496,7 +599,7 @@ class Mailbox {
 	public function getAttachments(int $uid):array {
 		$structure = $this->getStructure($uid, true);
 		if (false === empty($structure)):
-			$structure = $this->getStructureSection($structure, 'disposition', 'ATTACHMENT');
+			$structure = $this->getStructureSection($structure, 'disposition', 'attachment');
 		endif;
 		return $structure;
 	}
@@ -506,41 +609,33 @@ class Mailbox {
 	 * If this informations not in getAttachmets - To get information to save attachments with file_out_contents)
 	 */
 	public function getAttachmentData(int $uid, string $section) {
-		$this->select();
-		$field = sprintf('BODY[%s]', $section);
-		$command = sprintf('UID FETCH %d %s', $uid, $field);
-		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->getErrorText());
-		endif;
-		$result = $this->connection->getResults();
-		$result = array_shift($result);
-		return trim($result[$field]);
+		return $this->getBody($uid, $section);
 	}
 	
 	
 	/**
-	 * (By UID or message ID)
+	 * Retrieves FLAGS data associated with a message in the selected mailbox.
+	 * @param int
+	 * @return array
+	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.4.6
 	 */
-	public function moveMessages(int $uid, string $newFolder) {
-		if (false === $this->copy($uid, $this->connection->toUTF7Imap($newFolder))):
-			return false;
+	public function getFlags(int $uid):array {
+		if (false === isset($this->messages[$uid]['flags'])):
+			$this->select();
+			$command = sprintf('UID FETCH %d FLAGS', $uid);
+			if (false === $this->connection->command($command)):
+				return false;
+			endif;
+			if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+				throw new \Error('Oops! Something wrong with the results');
+			endif;
+			$results = array_shift($this->connection->results['FETCH']);
+			$this->messages[$uid]['flags'] = [];
+			if (isset($results['FLAGS']) && is_array($results['FLAGS'])):
+				$this->messages[$uid]['flags'] = $results['FLAGS'];
+			endif;
 		endif;
-		return $this->deleteMessage($uid);
-	}
-	
-	
-	/**
-	 * (By UID or message ID)
-	 */
-	public function deleteMessage(int $uid) {
-		if (false === $this->addFlags($uid, self::FLAG_DELETED)):
-			return false;
-		endif;
-		if (false === $this->expunge()):
-			$this->removeFlags($uid, self::FLAG_DELETED);
-			return false;
-		endif;
-		return true;
+		return $this->messages[$uid]['flags'];
 	}
 	
 	
@@ -582,22 +677,23 @@ class Mailbox {
 		if (false === $this->connection->command($command)):
 			return false;
 		endif;
-		$result = $this->connection->getResults();
-		if (false === empty($result)):
-			$result = array_shift($result);
-			$result = $result['FLAGS'];
-			if (false === isset($this->messages[$uid]['flags'])):
+		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+			return true;
+		endif;
+		$results = array_shift($this->connection->results['FETCH']);
+		if (false === empty($results['FLAGS']) && is_array($results['FLAGS'])):
+			if (empty($this->messages[$uid]['flags'])):
 				if (false === isset($this->messages[$uid])):
 					$this->messages[$uid] = [];
 				endif;
-				$this->messages[$uid]['flags'] = $result;
+				$this->messages[$uid]['flags'] = $results['FLAGS'];
 			else:
-				$count = count($result);
+				$count = count($results['FLAGS']);
 				for ($i = 0; $i < $count; ++$i):
-					if (in_array($result[$i], $this->messages[$uid]['flags'])):
+					if (in_array($results['FLAGS'][$i], $this->messages[$uid]['flags'])):
 						continue;
 					endif;
-					$this->messages[$uid]['flags'][] = $result[$i];
+					$this->messages[$uid]['flags'][] = $results['FLAGS'][$i];
 				endfor;
 			endif;
 		endif;
@@ -643,19 +739,20 @@ class Mailbox {
 		if (false === $this->connection->command($command)):
 			return false;
 		endif;
-		$result = $this->connection->getResults();
-		if (false === empty($result)):
-			$result = array_shift($result);
-			$result = $result['FLAGS'];
-			if (false === isset($this->messages[$uid]['flags'])):
+		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+			return true;
+		endif;
+		$results = array_shift($this->connection->results['FETCH']);
+		if (false === empty($results['FLAGS']) && is_array($results['FLAGS'])):
+			if (empty($this->messages[$uid]['flags'])):
 				if (false === isset($this->messages[$uid])):
 					$this->messages[$uid] = [];
 				endif;
-				$this->messages[$uid]['flags'] = $result;
+				$this->messages[$uid]['flags'] = $results['FLAGS'];
 			else:
-				$count = count($result);
+				$count = count($results['FLAGS']);
 				for ($i = 0; $i < $count; ++$i):
-					$key = array_search($result[$i], $this->messages[$uid]['flags']);
+					$key = array_search($results['FLAGS'][$i], $this->messages[$uid]['flags']);
 					if ($key === false):
 						continue;
 					endif;
@@ -665,30 +762,6 @@ class Mailbox {
 			endif;
 		endif;
 		return true;
-	}
-	
-	
-	/**
-	 * Retrieves FLAGS data associated with a message in the selected mailbox.
-	 * @param int
-	 * @return array
-	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.4.6
-	 */
-	public function getFlags(int $uid):array {
-		if (false === isset($this->messages[$uid]['flags'])):
-			$this->select();
-			$command = sprintf('UID FETCH %d FLAGS', $uid);
-			if (false === $this->connection->command($command)):
-				return false;
-			endif;
-			$result = $this->connection->getResults();
-			if (false === empty($result)):
-				$result = array_shift($result);
-				$result = $result['FLAGS'];
-				$this->messages[$uid]['flags'] = $result;
-			endif;
-		endif;
-		return $this->messages[$uid]['flags'];
 	}
 	
 	
@@ -730,14 +803,15 @@ class Mailbox {
 		if (false === $this->connection->command($command)):
 			return false;
 		endif;
-		$result = $this->connection->getResults();
-		if (false === empty($result)):
-			$result = array_shift($result);
-			$result = $result['FLAGS'];
+		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+			return true;
+		endif;
+		$results = array_shift($this->connection->results['FETCH']);
+		if (false === empty($results['FLAGS']) && is_array($results['FLAGS'])):
 			if (false === isset($this->messages[$uid])):
 				$this->messages[$uid] = [];
 			endif;
-			$this->messages[$uid]['flags'] = $result;
+			$this->messages[$uid]['flags'] = $results['FLAGS'];
 		endif;
 		return true;
 	}
@@ -746,21 +820,21 @@ class Mailbox {
 	/**
 	 * 
 	 */
-	protected function getStructureSection(array $struct, string $field, $value):array {
+	protected function getStructureSection(\stdClass $struct, string $field, $value):array {
 		static $section = [];
 		static $depth = -1;
 		$result = [];
-		if (isset($struct[$field]) && $struct[$field] === $value):
+		if (isset($struct->$field) && $struct->$field === $value):
 			if (false === empty($section)):
-				$struct['section'] = implode('.', $section);
+				$struct->section = implode('.', $section);
 			endif;
 			$result[] = $struct;
-		elseif (isset($struct['parts'])):
-			$count = count($struct['parts']);
+		elseif (isset($struct->parts)):
+			$count = count($struct->parts);
 			for ($i = 0; $i < $count; ++$i):
 				++$depth;
 				$section[$depth] = $i + 1;
-				$array = $this->getStructureSection($struct['parts'][$i], $field, $value);
+				$array = $this->getStructureSection($struct->parts[$i], $field, $value);
 				array_pop($section);
 				--$depth;
 				if (false === empty($array)):
