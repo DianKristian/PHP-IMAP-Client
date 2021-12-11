@@ -54,34 +54,6 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	const STATUS_UIDVALIDITY = 8;
 	const STATUS_UNSEEN = 16;
 	const STATUS_ALL = 31;
-	/*
-	* @param string ("ALL" | "FULL" | "FAST" | fetch-att | "(" fetch-att *(SP fetch-att) ")")
-	 * fetch-att:
-	 * - ENVELOPE
-	 * - FLAGS
-	 * - INTERNALDATE
-	 * - RFC822 [.HEADER | .SIZE | .TEXT]
-	 * - BODY [STRUCTURE]
-	 * - UID
-	 * - BODY section [<number.nz-number>]
-	 * - BODY.PEEK section [<number.nz-number>]
-	 */
-	const FETCH_UID = 1;
-	const FETCH_BODY = 2;
-	const FETCH_BODYSTRUCTURE = 4;
-	const FETCH_ENVELOPE = 8;
-	const FETCH_FLAGS = 16;
-	const FETCH_INTERNALDATE = 32;
-	const FETCH_RFC822_SIZE = 64;
-	const FETCH_RFC822_HEADER = 128;
-	const FETCH_RFC822_TEXT = 256;
-	const FETCH_RFC822 = 512;
-	const FETCH_TEXT_PLAIN = 1024;
-	const FETCH_TEXT_HTML = 2048;
-	const FETCH_ATTACHMENTS = 4096;
-	const FETCH_FAST = self::FETCH_FLAGS|self::FETCH_INTERNALDATE|self::FETCH_RFC822_SIZE;
-	const FETCH_ALL = self::FETCH_FAST|self::FETCH_ENVELOPE;
-	const FETCH_FULL = self::FETCH_ALL|self::FETCH_BODY;
 	
 	const FLAG_NONE = 0;
 	const FLAG_UID = 1;
@@ -139,7 +111,7 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	public function toUTF7Imap(string $string):string {
 		$fromEncoding = mb_detect_encoding($string, ['UTF-8', 'ISO-8859-1'], true);
 		if (false === $fromEncoding):
-			throw new \ValueError('Invalid encoding');
+			throw new \ErrorException('Invalid encoding');
 		endif;
 		return mb_convert_encoding($string, 'UTF7-IMAP', $fromEncoding);
 	}
@@ -191,9 +163,10 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	 * Since any command can return a status update as untagged data, the NOOP command can be used as a periodic poll for new messages or 
 	 * message status updates during a period of inactivity (this is the preferred method to do this).
 	 * The NOOP command can also be used to reset any inactivity autologout timer on the server.
+	 * @return bool
 	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.1.2
 	 */
-	public function noop() {
+	public function noop():bool {
 		return $this->command('NOOP');
 	}
 	
@@ -206,7 +179,7 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	 * @return bool
 	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.2.2
 	 */
-	public function authenticate(): bool {
+	public function authenticate():bool {
 		if (false === is_array($this->capabilities['AUTH'])):
 			$this->capabilities['AUTH'] = [$this->capabilities['AUTH']];
 		endif;
@@ -215,49 +188,42 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 			return $this->login($this->options['username'], $this->options['password']);
 		endif;
 		
-		/*
 		if (false === in_array($this->options['auth_type'], $this->capabilities['AUTH'])):
-			throw new \Error(sprintf('Unsupported authentication mechanism: %s.', $this->options['auth_type']));
+			throw new \ErrorException(sprintf('Unsupported authentication mechanism: %s by server.', $this->options['auth_type']));
 		endif;
-		*/
 		
+		$commands = array();
 		$username = $this->toUTF8($this->options['username']);
 		$password = $this->toUTF8($this->options['password']);
 		switch ($this->options['auth_type']):
 			case 'PLAIN':
 				//Format from https://tools.ietf.org/html/rfc4616#section-2
 				// https://datatracker.ietf.org/doc/html/rfc4959
-				$commands = array();
-				$commands[0] = 'AUTHENTICATE PLAIN';
-				if (isset($this->capabilities['SASL-IR'])):
-					$commands[0] .= ' ' .  base64_encode(sprintf("\x0%s\x0%s", $username, $password));
-				else:
-					$commands[1] = base64_encode(sprintf("\x0%s\x0%s", $username, $password));
-				endif;
+				$commands[] = 'AUTHENTICATE PLAIN ' .  base64_encode(sprintf("\0%s\0%s", $username, $password));
 			break;
 			
 			case 'LOGIN':
 				$commands = array();
 				$commands[] = 'AUTHENTICATE LOGIN';
-				$commands[] = base64_encode($this->toUTF8($this->options['username']));
-				$commands[] = base64_encode($this->toUTF8($this->options['password']));
-			break;
-			
-			case 'XOAUTH':
-				$commands = array();
-				$commands[] = sprintf("AUTHENTICATE XOAUTH user=%s\001auth=Bearer %s\001\001", 
-					$this->toUTF8($this->options['username']), 
-					$this->toUTF8($this->options['password'])
-				);
+				$commands[] = base64_encode($username);
+				$commands[] = base64_encode($username);
 			break;
 			
 			case 'XOAUTH2':
+				if (empty($this->options['access_token'])):
+					throw new \ErrorException('Configuration "access_token" required for auth type %s XOAUTH2');
+				endif;
+				$auth = base64_encode(sprintf("user=%s\001auth=Bearer %s\001\001", $username, $this->options['access_token']));
+				$commands[] = 'AUTHENTICATE XOAUTH2 ' . $auth;
+				break;
+				
 			case 'XOAUTHBEARER':
 			case 'PLAIN-CLIENTTOKEN':
 			case 'CRAM-MD5':
-				// @todo
+				// @todo: this is just a reminder to do it later once there is a chance to try it
+				// I am not familiar with these authenticatication. If you have an email server that supported with this authentication, please let me know
 			default:
-				throw new \Error(sprintf('Unsupported authentication mechanism: %s.', $this->options['auth_type']));
+				throw new \ErrorException(sprintf('Unsupported authentication mechanism: %s by client.', $this->options['auth_type']));
 			break;
 		endswitch;
 		
@@ -518,7 +484,7 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 			$status[] = 'UNSEEN';
 		endif;
 		if (empty($status)):
-			throw new \ValueError('Parameter 2 required');
+			throw new \ErrorException('Parameter 2 required');
 		endif;
 		$isUTF8Supported = false;
 		if (isset($this->capabilities['UTF8'])):
@@ -590,7 +556,7 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	protected function parseList(string $string):\stdClass {
 		$regexp = '@^\(([^\)]*)\)[ ]+("(?:[^"]*)"|(?:[^\s]+))[ ]+("(?:[^"]*)"|(?:[^\s]+))$@u';
 		if (false === (bool)preg_match($regexp, trim($string), $match)):
-			throw new \ParseError('Parse LIST response failed');
+			throw new \ErrorException('Parse LIST response failed');
 		endif;
 		array_shift($match);
 		$match = array_map('trim', $match);
@@ -610,10 +576,10 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	 */
 	protected function parseStatus(string $string):array {
 		if (false === (bool)preg_match('/\(([^\)]+)\)/u', $string, $match)):
-			throw new \ParseError('Parse STATUS response failed');
+			throw new \ErrorException('Parse STATUS response failed');
 		endif;
 		if (false === (bool)preg_match_all('/((MESSAGES|RECENT|UIDNEXT|UIDVALIDITY|UNSEEN)\s+([0-9]+))/', $match[1], $matches, PREG_PATTERN_ORDER)):
-			throw new \ParseError('Parse STATUS response failed');
+			throw new \ErrorException('Parse STATUS response failed');
 		endif;
 		return array_combine($matches[2], array_map('intval', $matches[3]));
 	}
@@ -627,7 +593,7 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	 */
 	protected function parseSearch(string $string):array {
 		if (false === (bool)preg_match_all('@([0-9]+)@u', $string, $match)):
-			throw new \ParseError('Parse SEARCH response failed');
+			throw new \ErrorException('Parse SEARCH response failed');
 		endif;
 		return array_map('intval', $match[1]);
 	}
@@ -641,101 +607,65 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	 */
 	protected function parseFlags(string $string):array {
 		if (false === (bool)preg_match('@\(([^\)]*)\)@u', $string, $match)):
-			throw new \ParseError('Parse FLAGS response failed');
+			throw new \ErrorException('Parse FLAGS response failed');
 		endif;
 		$match[1] = trim($match[1]);
 		return empty($match[1]) ? [] : preg_split('@[ ]+@', $match[1]);
 	}
 	
 	
-	/**
-	 * 
-	 */
-	protected function parseFetchResponse(array $data) {
-		$strlen = 0;
-		$reference = null;
+	protected function parseFetchResponse(string $string) {
 		$results = [];
+		$data = array_chunk($this->decode(mb_str_split($string)), 2);
 		$count = count($data);
-		$index = 0;
-		while ($index < $count):
-			$decoded = $this->decode(mb_str_split($data[$index]));
-			$decoded = array_chunk($decoded, 2);
-			++$index;
-			foreach ($decoded as $item):
-				$name = $item[0];
-				if (in_array($name, ['UID', 'RFC822.SIZE', 'INTERNALDATE', 'FLAGS'])):
-					$results[$name] = $item[1];
-				elseif (in_array($name, ['BODY', 'BODYSTRUCTURE'])):
-					// https://datatracker.ietf.org/doc/html/rfc2045#section-5.1
-					$results[$name] = $this->buildBodyStructure($item[1]);
-				elseif ($name === 'ENVELOPE'):
-					// @see: https://datatracker.ietf.org/doc/html/rfc3501#section-9
-					$fields = ['date', 'subject', 'from', 'sender', 'reply_to', 'to', 'cc', 'bcc', 'in_reply_to', 'message_id'];
-					$results[$name] = new \stdClass;
-					foreach ($item[1] as $subkey => $subval):
-						if (isset($fields[$subkey])):
-							$subkey = $fields[$subkey];
-						endif;
-						switch ($subkey):
-							case 'from':
-							case 'sender':
-							case 'reply_to':
-							case 'to':
-							case 'cc':
-							case 'bcc':
-								if ($subval === null):
-									$results[$name]->$subkey = [];
-									break;
-								endif;
-								if (false === is_array($subval)):
-									throw new \ParseError(sprintf('Parse %s response failed. Maybe malformed response', $subkey));
-								endif;
-								$results[$name]->$subkey = array_map([$this, 'buildAddress'], $subval);
+		foreach ($data as $item):
+			$name = $item[0];
+			if (in_array($name, ['BODY', 'BODYSTRUCTURE'])):
+				// https://datatracker.ietf.org/doc/html/rfc2045#section-5.1
+				$results[$name] = $this->buildBodyStructure($item[1]);
+			elseif ($name === 'ENVELOPE'):
+				// @see: https://datatracker.ietf.org/doc/html/rfc3501#section-9
+				$fields = ['date', 'subject', 'from', 'sender', 'reply_to', 'to', 'cc', 'bcc', 'in_reply_to', 'message_id'];
+				$results[$name] = new \stdClass;
+				foreach ($item[1] as $subkey => $subval):
+					if (isset($fields[$subkey])):
+						$subkey = $fields[$subkey];
+					endif;
+					switch ($subkey):
+						case 'from':
+						case 'sender':
+						case 'reply_to':
+						case 'to':
+						case 'cc':
+						case 'bcc':
+							if ($subval === null):
+								$results[$name]->$subkey = [];
 								break;
-							case 'subject':
-								$results[$name]->$subkey = $this->decodeMimeHeader($subval);
-								break;
-							default:
-								$results[$name]->$subkey = $subval;
-						endswitch;
-					endforeach;
-				elseif ((bool)preg_match('@^(BODY\[[^\]]*\](?:\<[^\>]+\>)?|RFC822(?:\.(?:TEXT|HEADER))?)$@u', $name, $match)):
-					$strlen = $item[1];
-					$results[$name] = '';
-					while ($index < $count):
-						$length = mb_strlen($data[$index], 'UTF-8');
-						if (($strlen - $length) > 0):
-							$results[$name] .= $data[$index];
-							$strlen -= $length;
-							++$index;
-							continue;
-						endif;
-						$remain = '';
-						$chr = mb_str_split($data[$index], 1, 'UTF-8');
-						$chrlen = count($chr);
-						for ($i = 0; $i < $chrlen; ++$i):
-							if ($strlen === 0):
-								$remain .= $chr[$i];
-							else:
-								$results[$name] .= $chr[$i];
-								--$strlen;
 							endif;
-						endfor;
-						$remain = trim($remain);
-						if ($remain !== ''):
-							$data[$index] = $remain;
+							if (false === is_array($subval)):
+								throw new \ErrorException(sprintf('Parse %s response failed. Maybe malformed response', $subkey));
+							endif;
+							$results[$name]->$subkey = array_map([$this, 'buildAddress'], $subval);
 							break;
-						endif;
-						++$index;
-					endwhile;
-				endif;
-			endforeach;
-		endwhile;
+						case 'subject':
+							$results[$name]->$subkey = $this->decodeMimeHeader($subval);
+							break;
+						default:
+							$results[$name]->$subkey = $subval;
+					endswitch;
+				endforeach;
+			else:
+				$results[$name] = $item[1];
+			endif;
+		endforeach;
 		return $results;
 	}
 	
 	/**
-	 * 
+	 * Parse imap string response
+	 * @param string
+	 * @param string optional
+	 * @return void
 	 */
 	protected function parseResponse(string $line, ?string &$responseTag = null):void {
 		@list($responseTag, $responseStatus, $responseData) = explode(' ', $line, 3);
@@ -761,7 +691,8 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 						endif;
 						$this->results[$responseStatus][$responseNumber] = [];
 					endif;
-					$this->results[$responseStatus][$responseNumber][] = $responseData;
+					//$this->results[$responseStatus][$responseNumber][] = $responseData;
+					$this->results[$responseStatus][$responseNumber] = $responseData;
 				endif;
 			elseif (in_array($responseStatus, ['OK', 'NO', 'BAD', 'PREAUTH', 'BYE'])):
 				$responseData = trim($responseData);
@@ -780,7 +711,6 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 					elseif (in_array($key, ['ALERT', 'PARSE', 'TRYCREATE'])):
 						$this->results[$key] = $value;
 					else:
-						// @todo:
 						$this->results[$key] = $value;
 					endif;
 				endif;
@@ -806,7 +736,8 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 				else:
 					$sequenceNumber = end(array_keys($this->results['FETCH']));
 				endif;
-				$this->results['FETCH'][$sequenceNumber][] = $line;
+				//$this->results['FETCH'][$sequenceNumber][] = $line;
+				$this->results['FETCH'][$sequenceNumber] .= $line;
 			endif;
 		endif;
 	}
@@ -818,18 +749,24 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	 * @param int
 	 * @return array
 	 */
-	protected function decode(array $characters):array {
-		static $index = 0;
+	protected function decode(array $characters, int &$index = 0):array {
+		//static $index = 0;
 		$result = array();
 		$length = count($characters);
 		$text = '';
+		$strlen = '';
 		$isQuoted = false;
 		$isSection = false;
+		$isCurlyBrackets = false;
+		//var_dump($text);
+		//var_dump($index);
+		//var_dump($characters[$index]);
 		if (isset($characters[$index]) && $characters[$index] === '('):
 			++$index;
 		endif;
+		
 		while ($index < $length):
-			$ord = ord($characters[$index]);
+			//$ord = ord($characters[$index]);
 			$char = $characters[$index];
 			++$index;
 			if ($isQuoted):
@@ -845,6 +782,22 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 					$isSection = false;
 				endif;
 				$text .= $char;
+			elseif ($isCurlyBrackets):
+				if ($char === '}'):
+					$isCurlyBrackets = false;
+					$strlen = (int)$strlen;
+				else:
+					$strlen .= $char;
+				endif;
+			elseif (is_int($strlen)):
+				if ($strlen > 0):
+					$text .= $char;
+					--$strlen;
+				else:
+					$result[] = $text;
+					$strlen = '';
+					$text = '';
+				endif;
 			else:
 				if ($char === '"'):
 					$isQuoted = true;
@@ -853,9 +806,11 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 					$text .= $char;
 				elseif ($char === '('):
 					--$index;
-					$result[] = $this->decode($characters);
-				elseif (in_array($char, ['{', "\r", "\n"])):
-				elseif (in_array($char, [' ', '}', ')'])):
+					$result[] = $this->decode($characters, $index);
+				elseif ($char === '{'):
+					$isCurlyBrackets = true;
+				elseif (in_array($char, ["\r", "\n"])):
+				elseif (in_array($char, [' ', ')'])):
 					if ($text !== ''):
 						if ($text === 'NIL'):
 							$text = null;
@@ -874,9 +829,8 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 					$text .= $char;
 				endif;
 			endif;
-			//sleep(1);
 		endwhile;
-		if ($index === $length):
+		if ($index >= $length):
 			if ($text !== ''):
 				$result[] = $text;
 			endif;
@@ -931,6 +885,13 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 						$object->$key = strtolower($value);
 					endif;
 					break;
+				
+				case 'id':
+					if ($value !== null && preg_match('@^\<([^\>]*)\>$@', $value, $match)):
+						$value = trim($match[1]);
+					endif;
+					$object->$key = $value;
+					break;
 					
 				case 'parameter':
 					$object->parameter = [];
@@ -955,6 +916,10 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 				case 'disposition':
 					$object->disposition = null;
 					$object->disposition_parameter = [];
+					// Fix bug for outlook that not send inline header for inline attachments
+					if ($object->id !== null):
+						$object->disposition = 'inline';
+					endif;
 					if (empty($value) || false === is_array($value)):
 						break;
 					endif;
@@ -1005,39 +970,43 @@ abstract class ConnectionAbstract implements ConnectionInterface {
 	
 	
 	/**
-	 * 
+	 * decode subject header
+	 * @param string
+	 * @return string
+	 * @see: http://www.faqs.org/rfcs/rfc2047.html
 	 */
 	public function decodeMimeHeader(string $string):string {
-		if (function_exists('imap_mime_header_decode')):
-			$elements = imap_mime_header_decode($string);
-			$results = '';
-			$count = count($elements);
-			$encodingList = [];
-			if (function_exists('mb_list_encodings')):
-				$encodingList = mb_list_encodings();
-			endif;
-			for ($i = 0; $i < $count; ++$i):
-				$charset = strtoupper($elements[$i]->charset);
-				switch ($charset):
-					case 'DEFAULT':
-					case 'UTF-8':
-						$results .= $elements[$i]->text;
-						break;
-					default:
-						if (in_array($charset, array_map('strtoupper', $encodingList))):
-							$results .= mb_convert_encoding($elements[$i]->text, 'UTF-8', $elements[$i]->charset);
-						elseif (function_exists('iconv')):
-							$res = iconv($elements[$i]->charset, 'UTF-8', $elements[$i]->text);
-							$results .= ($res === false) ? $elements[$i]->text : $res;
-						else:
-							$results .= $elements[$i]->text;
-						endif;
-				endswitch;
-			endfor;
-			return $results;
+		$charsetList = [];
+		if (function_exists('mb_list_encodings')):
+			$charsetList = mb_list_encodings();
+			$charsetList = array_combine(array_map('strtoupper', $charsetList), $charsetList);
 		endif;
-		// @todo:
-		// @see: http://www.faqs.org/rfcs/rfc2047.html
+		$regexp = '@^=\?'
+			. '([^\?]+)' // charset
+			. '\?'
+			. '([^\?]+)' // encoding
+			. '\?'
+			. '([^\?]*)' // encoded-text
+			. '\?=$@';
+		if (preg_match($regexp, $string, $match)):
+			$charset = strtoupper($match[1]);
+			$encoding = strtoupper($match[2]);
+			$string = $match[3];
+			if ($encoding === 'B'):
+				$string = base64_decode($string);
+			elseif ($encoding === 'Q'):
+				$string = quoted_printable_decode($string);
+				$string = str_replace('_', ' ', $string);
+			endif;
+			// We expect charset UTF-8
+			// There is nothing we can do if the charset is not in the list
+			if ($charset !== 'UTF-8' && isset($charsetList[$charset])):
+				$string = mb_convert_encoding($string, 'UTF-8', $charsetList[$charset]);
+			else:
+				//$string = mb_convert_encoding($string, 'UTF-8', 'ASCII');
+			endif;			
+		endif;
+		return $string;
 	}
 }
 
