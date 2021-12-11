@@ -8,7 +8,7 @@ class ConnectionSocket extends ConnectionAbstract {
 	protected $commandTag = 0;	
 	
 	/**
-	 * 
+	 * Constructor
 	 */
 	public function __construct(Config $config) {
 		$this->options = $config;
@@ -28,12 +28,7 @@ class ConnectionSocket extends ConnectionAbstract {
 		endif;
 		
 		$options = array();
-		/*
-		$options['ssl'] = [
-			'SNI_enabled' => true,
-			'SNI_server_name' => 'localhost'
-		];
-		*/
+		
 		if ($this->options['proxy_host'] !== null):
 			$options['http'] = [];
 			$options['http']['proxy'] = 'tcp://' . $this->options['proxy_host'];
@@ -58,14 +53,14 @@ class ConnectionSocket extends ConnectionAbstract {
 		
 		if (false === is_resource($this->connection)):
 			$this->connection = null;
-			throw new \Error($error, $errno);
+			throw new \ErrorException($error, $errno);
 		endif;
 		
 		if (false === stream_set_timeout($this->connection, $this->options['timeout'])):
-			throw new \Error('Failed to set timeout');
+			throw new \ErrorException('Failed to set timeout');
 		endif;
 		if (false === $this->command('CAPABILITY')):
-			throw new \Error($this->getErrorText());
+			throw new \ErrorException($this->errorText);
 		endif;
 		if ($this->options['secure'] === 'tls'):
 			// Initiate a TLS (encrypted) session
@@ -109,7 +104,7 @@ class ConnectionSocket extends ConnectionAbstract {
 	/**
 	 * 
 	 */
-	public function command(string $command, ?string &$commandTag = null): bool {
+	public function command(string $command, ?string &$commandTag = null):bool {
 		if (false === $this->isConnected()):
 			return false;
 		endif;
@@ -119,7 +114,7 @@ class ConnectionSocket extends ConnectionAbstract {
 		$hasCrlf = $hasCrlf && strpos($command, "\r") !== false;
 		
 		if ($hasCrlf):
-			throw new ValueError('Parameter 1 are not allowed to contain line break characters');
+			throw new ErrorException('Parameter 1 are not allowed to contain line break characters');
 		endif;
 		
 		@list($requestCommand, $requestArguments) = preg_split('@[ ]+@', trim($command), 2);
@@ -130,29 +125,29 @@ class ConnectionSocket extends ConnectionAbstract {
 			// Valid only in not authenticated state
 			if (self::$commands[$requestCommand] & self::COMMAND_NOT_AUTHENTICATED):
 				if (false === isset($this->capabilities['AUTH'])):
-					throw new \Error('The state already authenticated');
+					throw new \ErrorException('The state already authenticated');
 				endif;
 				if ($requestCommand === 'AUTHENTICATE'):
 					$arguments = preg_split('@[ ]+@', $requestArguments, 2);
 					if (false === in_array($arguments[0], $this->capabilities['AUTH'])):
-						throw new \Error(sprintf('%s authentication mechanism not supported by server', $arguments[0]));
+						throw new \ErrorException(sprintf('%s authentication mechanism not supported by server', $arguments[0]));
 					endif;
 				elseif ($requestCommand === 'LOGIN'):
 					if (isset($this->capabilities['LOGINDISABLED'])):
-						throw new \Error('Using LOGIN not permitted by server');
+						throw new \ErrorException('Using LOGIN not permitted by server');
 					endif;
 				endif;
 				
 			// Valid only in authenticated state
 			elseif (self::$commands[$requestCommand] & self::COMMAND_AUTHENTICATED):
 				if (false === $this->isAuthenticated()):
-					throw new \Error(sprintf('Using %s method valid only in authenticated state', $requestCommand));
+					throw new \ErrorException(sprintf('Using %s method valid only in authenticated state', $requestCommand));
 				endif;
 				
 			// Valid only when in selected state
 			elseif (self::$commands[$requestCommand] & self::COMMAND_SELECTED):
 				if (false === $this->isSelected()):
-					throw new \Error(sprintf('No mailbox selected! Please, use SELECT method first to use %s method', $requestCommand));
+					throw new \ErrorException(sprintf('No mailbox selected! Please, use SELECT method first to use %s method', $requestCommand));
 				endif;
 			endif;
 			
@@ -176,7 +171,7 @@ class ConnectionSocket extends ConnectionAbstract {
 		endif;
 		
 		if (false === @fwrite($this->connection, $command)):
-			throw new \Error(sprintf('Failed to write a message: %s', trim($command)));
+			throw new \ErrorException(sprintf('Failed to write a message: %s', trim($command)));
 		endif;
 		
 		$this->results = [];
@@ -186,7 +181,7 @@ class ConnectionSocket extends ConnectionAbstract {
 		while (true):
 			$line = @fgets($this->connection);
 			if (false === $line):
-				throw new \Error('Failed to read a message');
+				throw new \ErrorException('Failed to read a message');
 			endif;
 			if ($this->options['debug']):
 				echo '<< ' . $line;
@@ -244,7 +239,7 @@ class ConnectionSocket extends ConnectionAbstract {
 		
 		// stream_socket_enable_crypto return bool or 0 if there isn't enough data and you should try again (only for non-blocking sockets).
 		if (true !== stream_socket_enable_crypto($this->connection, true, $cryptoType)):
-			throw new \Error('Failed to enable TLS');
+			throw new \ErrorException('Failed to enable TLS');
 		endif;
 	}
 }
