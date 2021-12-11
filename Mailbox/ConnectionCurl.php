@@ -8,16 +8,16 @@ namespace Mailbox;
 class ConnectionCurl extends ConnectionAbstract {
 	
 	/**
-	 * 
+	 * Constructor
 	 */
 	public function __construct(Config $config) {
 		if (false === extension_loaded('curl')):
 			if (false === function_exists('dl')):
-				throw new \Error('curl extension not installed');
+				throw new \ErrorException('curl extension not installed');
 			endif;
 			$prefix = (PHP_SHLIB_SUFFIX === 'dll') ? 'php' : '';
 			if (false === @dl($prefix . 'curl.' . PHP_SHLIB_SUFFIX)):
-				throw new \Error('Load curl extension failed');
+				throw new \ErrorException('Load curl extension failed');
 			endif;
 		endif;
 		
@@ -29,6 +29,8 @@ class ConnectionCurl extends ConnectionAbstract {
 		$this->curlOptions[CURLOPT_SSL_VERIFYHOST] = false;
 		$this->curlOptions[CURLOPT_RETURNTRANSFER] = true;
 		$this->curlOptions[CURLOPT_FRESH_CONNECT] = false;
+		$this->curlOptions[CURLOPT_FAILONERROR] = true;
+		$this->curlOptions[CURLOPT_TCP_KEEPALIVE] = true;
 		$this->curlOptions[CURLOPT_CONNECTTIMEOUT] = $config['timeout'];
 		$this->curlOptions[CURLOPT_TIMEOUT] = $config['timeout'];
 		$this->curlOptions[CURLOPT_HEADERFUNCTION] = [$this, 'parseResponseCallback'];
@@ -61,7 +63,7 @@ class ConnectionCurl extends ConnectionAbstract {
 		endif;
 		
 		if (false === $this->command('CAPABILITY')):
-			throw new \Error($this->errorText);
+			throw new \ErrorException($this->errorText);
 		endif;
 		
 		if (isset($this->capabilities['STARTTLS'])):
@@ -124,7 +126,7 @@ class ConnectionCurl extends ConnectionAbstract {
 		$hasCrlf = $hasCrlf && strpos($command, "\r") !== false;
 		
 		if ($hasCrlf):
-			throw new ValueError('Parameter 1 are not allowed to contain line break characters');
+			throw new ErrorException('Parameter 1 are not allowed to contain line break characters');
 		endif;
 		
 		@list($requestCommand, $requestArguments) = preg_split('@[ ]+@u', trim($command), 2);
@@ -134,29 +136,29 @@ class ConnectionCurl extends ConnectionAbstract {
 			// Valid only in not authenticated state
 			if (self::$commands[$requestCommand] & self::COMMAND_NOT_AUTHENTICATED):
 				if ($this->isAuthenticated()):
-					throw new \Error('The state already authenticated');
+					throw new \ErrorException('The state already authenticated');
 				endif;
 				if ($requestCommand === 'AUTHENTICATE'):
 					$arguments = preg_split('@[ ]+@', $requestArguments, 2);
 					if (false === in_array($arguments[0], $this->capabilities['AUTH'])):
-						throw new \Error(sprintf('%s authentication mechanism not supported by server', $arguments[0]));
+						throw new \ErrorException(sprintf('%s authentication mechanism not supported by server', $arguments[0]));
 					endif;
 				elseif ($requestCommand === 'LOGIN'):
 					if (isset($this->capabilities['LOGINDISABLED'])):
-						throw new \Error('Using LOGIN not permitted by server');
+						throw new \ErrorException('Using LOGIN not permitted by server');
 					endif;
 				endif;
 				
 			// Valid only in authenticated state
 			elseif (self::$commands[$requestCommand] & self::COMMAND_AUTHENTICATED):
 				if (false === $this->isAuthenticated()):
-					throw new \Error(sprintf('Using %s method valid only in authenticated state', $requestCommand));
+					throw new \ErrorException(sprintf('Using %s method valid only in authenticated state', $requestCommand));
 				endif;
 				
 			// Valid only when in selected state
 			elseif (self::$commands[$requestCommand] & self::COMMAND_SELECTED):
 				if (false === $this->isSelected()):
-					throw new \Error(sprintf('No mailbox selected! Please, use SELECT method first to use %s method', $requestCommand));
+					throw new \ErrorException(sprintf('No mailbox selected! Please, use SELECT method first to use %s method', $requestCommand));
 				endif;
 			endif;
 		endif;
@@ -180,7 +182,7 @@ class ConnectionCurl extends ConnectionAbstract {
 		endif;
 		
 		if ($this->errorCode === 'BAD'):
-			throw new \Error($this->errorText);
+			throw new \ErrorException($this->errorText);
 		endif;
 		
 		if ($this->errorCode !== 'OK'):
@@ -207,9 +209,8 @@ class ConnectionCurl extends ConnectionAbstract {
 	 * 
 	 */
 	protected function parseResponseCallback($curlHandle, string $line):int {
-		$size = mb_strlen($line);
 		$this->parseResponse($line);
-		return $size;
+		return strlen($line);
 	}
 }
 
