@@ -5,7 +5,6 @@ interface ConnectionInterface {
 	public function isAuthenticated():bool;
 	public function isSelected():bool;
 	public function getSelectedFolder():?string;
-	//public function getResults();
 	public function noop();
 	public function logout():bool;
 	public function authenticate();
