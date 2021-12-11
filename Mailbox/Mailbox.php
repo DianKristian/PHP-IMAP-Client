@@ -20,7 +20,6 @@ class Mailbox {
 	protected $status = [];
 	protected $folder;
 	protected $readonly = false;
-	protected $list;
 	protected $uids = [];
 	protected $messages = [];
 	protected $connection;
@@ -128,76 +127,23 @@ class Mailbox {
 	
 	
 	/**
-	 * Searches the mailbox for messages that match the given searching criteria parameters.
-	 * @command-select
+	 * Get unique identification (UID) for given message in selected folder
+	 * @param int sequence number of message
+	 * @return int if sequence number not found method will return 0
 	 */
-	public function search(array $criteria = [], bool $returnUid = false) {
-		if (empty($criteria)):
-			$string = 'ALL';
-		else:
-			$searches = [];
-			foreach ($criteria as $key => $value):
-				if (false === is_string($key)):
-					continue;
-				endif;
-				switch (strtoupper($key)):
-					case 'FLAGS':
-						if (false === is_int($value)):
-							break;
-						endif;
-						if ($value & self::FLAG_ANSWERED):
-							$searches[] = 'ANSWERED';
-						elseif ($value & self::FLAG_FLAGGED):
-							$searches[] = 'FLAGGED';
-						elseif ($value & self::FLAG_DELETED):
-							$searches[] = 'DELETED';
-						elseif ($value & self::FLAG_SEEN):
-							$searches[] = 'SEEN';
-						elseif ($value & self::FLAG_DRAFT):
-							$searches[] = 'DRAFT';
-						elseif ($value & self::FLAG_RECENT):
-							$searches[] = 'RECENT';
-						endif;
-					break;
-					
-					// string
-					case 'BCC':
-					case 'BODY':
-					case 'CC':
-					case 'FROM':
-					case 'HEADER':
-					case 'NOT':
-					case 'OR':
-					case 'SUBJECT':
-					case 'TEXT':
-					case 'TO':
-					break;
-					
-					// date
-					case 'BEFORE':
-					case 'ON':
-					case 'SENTBEFORE':
-					case 'SENTON':
-					case 'SENTSINCE':
-					case 'SINCE':
-					
-					// Flag
-					case 'KEYWORD':
-					
-					// Octet
-					case 'LARGER':
-					case 'SMALLER':
-					
-					case 'UID':
-				endswitch;
-			endforeach;
-			$string = implode(' ', $searches);
+	public function getUid(int $sequenceNumber):int {
+		if (false === isset($this->uids[$sequenceNumber])):
+			$this->select();
+			$command = sprintf('FETCH %d UID', $sequenceNumber);
+			if (false === $this->connection->command($command)):
+				return false;
+			endif;
+			if (false === isset($this->connection->results['FETCH'][$sequenceNumber]['UID'])):
+				return false;
+			endif;
+			$this->uids[$sequenceNumber] = $this->connection->results['FETCH'][$sequenceNumber]['UID'];
 		endif;
-		$command = sprintf('%sSEARCH %s', $returnUid ? 'UID ' : '', $string);
-		if (false === $this->connection->command($command)):
-			return false;
-		endif;
-		return isset($this->connection->results['SEARCH']) ? $this->connection->results['SEARCH'] : [];
+		return $this->uids[$sequenceNumber];
 	}
 	
 	
@@ -208,25 +154,18 @@ class Mailbox {
 	 */
 	public function getInternalDate(int $uid) {
 		$this->select();
-		$field = 'INTERNALDATE';
-		$command = sprintf('UID FETCH %d %s', $uid, $field);
+		$command = sprintf('UID FETCH %d INTERNALDATE', $uid);
 		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->errorText);
-		endif;
-		$sequenceNumber = array_search($uid, $this->uids);
-		if (false === $sequenceNumber):
 			return false;
 		endif;
-		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
-			throw new \Error('Oops! Something wrong with the results');
+		$result = '';
+		if (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH'])):
+			$data = array_shift($this->connection->results['FETCH']);
+			if (isset($data['INTERNALDATE'])):
+				$result = $data['INTERNALDATE'];
+			endif;
 		endif;
-		var_dump($this->connection->results['FETCH']);
-		$result = $this->connection->results;
-		if (empty($result)):
-			return false;
-		endif;
-		$result = array_shift($result);
-		return $result[$field];
+		return $result;
 	}
 	
 	
@@ -236,21 +175,101 @@ class Mailbox {
 	 * @return int
 	 */
 	public function getSize(int $uid):int {
-		$this->select();
-		$field = 'RFC822.SIZE';
-		$command = sprintf('UID FETCH %d %s', $uid, $field);
-		if (false === $this->connection->command($command)):
-			throw new \Error($this->connection->errorText);
+		if (false === isset($this->messages[$uid]['size'])):
+			$this->select();
+			$command = sprintf('UID FETCH %d RFC822.SIZE', $uid);
+			if (false === $this->connection->command($command)):
+				return false;
+			endif;
+			if (false === (isset($this->connection->results['FETCH']) 
+			&& is_array($this->connection->results['FETCH']))):
+				return false;
+			endif;
+			$data = array_shift($this->connection->results['FETCH']);
+			if (false === isset($data['RFC822.SIZE'])):
+				return false;
+			endif;
+			$this->messages[$uid]['size'] = $data['RFC822.SIZE'];
 		endif;
-		$result = $this->connection->results;
-		if (empty($result)):
-			return false;
-		endif;
-		$result = array_shift($result);
-		return $result[$field];
+		return $this->messages[$uid]['size'];
 	}
 	
 	
+	/**
+	 * Get all structure information for given message in selected folder
+	 * @param int
+	 * @return array with attributes listed below
+	 * - parts: array available when type multipart
+	 * - type: string primary body type
+	 * - subtype: string|null MIME subtype
+	 * - parameter: array with key-value pairs
+	 * - id: string|null identification string
+	 * - description: string|null content description
+	 * - encoding: string body transfer encoding
+	 * - size: int number of bytes
+	 * - lines: int number of lines, available for type text
+	 */
+	public function getStructure(int $uid, bool $extensible = false) {
+		if (false === isset($this->messages[$uid]['structure'])):
+			$this->select();
+			$command = sprintf('UID FETCH %d BODYSTRUCTURE', $uid);
+			if (false === $this->connection->command($command)):
+				return false;
+			endif;
+			if (false === (isset($this->connection->results['FETCH']) 
+			&& is_array($this->connection->results['FETCH']))):
+				return null;
+			endif;
+			$results = array_shift($this->connection->results['FETCH']);
+			if (false === (isset($results['BODYSTRUCTURE']) && is_object($results['BODYSTRUCTURE']))):
+				return null;
+			endif;
+			$this->messages[$uid]['structure'] = $results['BODYSTRUCTURE'];
+		endif;
+		return $this->messages[$uid]['structure'];
+	}
+	
+	
+	/**
+	 * Get all envelope information for given message in selected folder
+	 * @param int message UID
+	 * @return object stdClass | null. Fields:
+	 *  - date: string
+	 *  - subject: string
+	 *  - from: array "mail addresses"
+	 *  - sender: array "mail addresses"
+	 *  - reply_to: array "mail addresses"
+	 *  - to: array "mail addresses"
+	 *  - cc: array "mail addresses"
+	 *  - bcc: array "mail addresses"
+	 *  - in_reply_to: string | null
+	 *  - message_id: string| null
+	 * "mail addresses" values can empty array or more than one addresses, fields:
+	 *  - name string|null
+	 *  - adl string|null
+	 *  - mailbox string
+	 *  - host string
+	 */
+	public function getEnvelope(int $uid):?\stdClass {
+		if (false === isset($this->messages[$uid]['envelope'])):
+			$this->select();
+			$command = sprintf('UID FETCH %d ENVELOPE', $uid);
+			if (false === $this->connection->command($command)):
+				return false;
+			endif;
+			if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
+				return null;
+			endif;
+			$results = array_shift($this->connection->results['FETCH']);
+			if (false === (isset($results['ENVELOPE']) && is_object($results['ENVELOPE']))):
+				return null;
+			endif;
+			$this->messages[$uid]['envelope'] = $results['ENVELOPE'];
+		endif;
+		return $this->messages[$uid]['envelope'];
+	}
+	
+	/*
 	// (output all folders (example: INBOX, INBOX/Folder1 SPAM, ...)
 	public function getFolders() {
 		$this->select();
@@ -281,6 +300,7 @@ class Mailbox {
 			$this->connection->toUTF7Imap($folder)
 		));
 	}
+	*/
 	
 	// (Count the messages in a folder)
 	public function countMessages() {
@@ -359,110 +379,11 @@ class Mailbox {
 	
 	
 	/**
-	 * Get unique identification (UID) for given message in selected folder
-	 * @param int sequence number of message
-	 * @return int if sequence number not found method will return 0
-	 */
-	public function getUid(int $sequenceNumber):int {
-		if (false === isset($this->uids[$sequenceNumber])):
-			$this->select();
-			$command = sprintf('FETCH %d UID', $sequenceNumber);
-			if (false === $this->connection->command($command)):
-				return false;
-			endif;
-			if (false === isset($this->connection->results['FETCH'][$sequenceNumber]['UID'])):
-				throw new \Error('Oops! Something wrong with the results');
-			endif;
-			$this->uids[$sequenceNumber] = $this->connection->results['FETCH'][$sequenceNumber]['UID'];
-		endif;
-		return $this->uids[$sequenceNumber];
-	}
-	
-	
-	/**
-	 * Get all structure information for given message in selected folder
-	 * @param int
-	 * @return array with attributes listed below
-	 * - parts: array available when type multipart
-	 * - type: string primary body type
-	 * - subtype: string|null MIME subtype
-	 * - parameter: array with key-value pairs
-	 * - id: string|null identification string
-	 * - description: string|null content description
-	 * - encoding: string body transfer encoding
-	 * - size: int number of bytes
-	 * - lines: int number of lines, available for type text
-	 */
-	public function getStructure(int $uid, bool $extensible = false) {
-		if (false === isset($this->messages[$uid]['structure'])):
-			$this->select();
-			$field = $extensible ? 'BODYSTRUCTURE' : 'BODY';
-			$command = sprintf('UID FETCH %d %s', $uid, $field);
-			if (false === $this->connection->command($command)):
-				return false;
-			endif;
-			if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
-				throw new \Error('Oops! Something wrong with the results');
-			endif;
-			$results = array_shift($this->connection->results['FETCH']);
-			if (false === (isset($results[$field]) && is_object($results[$field]))):
-				throw new \Error('Oops! Something wrong with the results');
-			endif;
-			if ($field === 'BODY'):
-				return $results[$field];
-			endif;
-			$this->messages[$uid]['structure'] = $results[$field];
-		endif;
-		return $this->messages[$uid]['structure'];
-	}
-	
-	
-	/**
-	 * Get all envelope information for given message in selected folder
-	 * @param int message UID
-	 * @return object with fields:
-	 *  date: string
-	 *  subject: string
-	 *  from: array "mail addresses"
-	 *  sender: array "mail addresses"
-	 *  reply_to: array "mail addresses"
-	 *  to: array "mail addresses"
-	 *  cc: array "mail addresses"
-	 *  bcc: array "mail addresses"
-	 *  in_reply_to: array "mail addresses"
-	 *  message_id: string| null
-	 * mail addresses values can empty array or more than one addresses, fields:
-	 *  name string|null
-	 *  adl string|null
-	 *  mailbox string
-	 *  host string
-	 */
-	public function getEnvelope(int $uid):\stdClass {
-		if (false === isset($this->messages[$uid]['envelope'])):
-			$this->select();
-			$command = sprintf('UID FETCH %d ENVELOPE', $uid);
-			if (false === $this->connection->command($command)):
-				return false;
-			endif;
-			if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
-				throw new \Error('Oops! Something wrong with the results');
-			endif;
-			$results = array_shift($this->connection->results['FETCH']);
-			if (false === (isset($results['ENVELOPE']) && is_object($results['ENVELOPE']))):
-				throw new \Error('Oops! Something wrong with the results');
-			endif;
-			$this->messages[$uid]['envelope'] = $results['ENVELOPE'];
-		endif;
-		return $this->messages[$uid]['envelope'];
-	}
-	
-	
-	/**
 	 * Return reply_to field email addresses information  for given message in selected folder
 	 * @param int message UID
 	 * @return array see: getEnvelope method
 	 */
-	public function getReplyTo(int $uid):array {
+	public function getReplyTo(int $uid):?array {
 		$envelope = $this->getEnvelope($uid);
 		return $envelope->reply_to;
 	}
@@ -473,7 +394,7 @@ class Mailbox {
 	 * @param int message UID
 	 * @return array see: getEnvelope method
 	 */
-	public function getFrom(int $uid):array {
+	public function getFrom(int $uid):?array {
 		$envelope = $this->getEnvelope($uid);
 		return $envelope->from;
 	}
@@ -491,22 +412,25 @@ class Mailbox {
 	
 	
 	/**
-	 * 
+	 * Get email contents
+	 * @param int
+	 * @param string
+	 * @return string
 	 */
 	public function getBody(int $uid, string $section = ''):string {
 		$field = sprintf('BODY[%s]', $section);
 		$command = sprintf('UID FETCH %d %s', $uid, $field);
-		if (false === $this->connection->command($command)):
-			return '';
+		$result = '';
+		if ($this->connection->command($command)):
+			if (isset($this->connection->results['FETCH']) 
+			&& is_array($this->connection->results['FETCH'])):
+				$data = array_shift($this->connection->results['FETCH']);
+				if (isset($data[$field]) && is_string($data[$field])):
+					$result = trim($data[$field]);
+				endif;
+			endif;
 		endif;
-		if (false === (isset($this->connection->results['FETCH']) && is_array($this->connection->results['FETCH']))):
-			throw new \Error('Oops! Something wrong with the results');
-		endif;
-		$results = array_shift($this->connection->results['FETCH']);
-		if (false === (isset($results[$field]) && is_string($results[$field]))):
-			throw new \Error('Oops! Something wrong with the results');
-		endif;
-		return trim($results[$field]);
+		return $result;
 	}
 	
 	
@@ -596,10 +520,10 @@ class Mailbox {
 	/**
 	 * (Inline and attached - Name, Extension, Name without extension, size, MimeType)
 	 */
-	public function getAttachments(int $uid):array {
+	public function getAttachments(int $uid, bool $inline = false):array {
 		$structure = $this->getStructure($uid, true);
 		if (false === empty($structure)):
-			$structure = $this->getStructureSection($structure, 'disposition', 'attachment');
+			$structure = $this->getStructureSection($structure, 'disposition', ($inline ? 'inline' : 'attachment'));
 		endif;
 		return $structure;
 	}
@@ -643,12 +567,11 @@ class Mailbox {
 	 * Add FLAGS data associated with a message in the selected mailbox.
 	 * @param int
 	 * @param int
-	 * - self::FLAG_NONE
-	 * - self::FLAG_ANSWERED
-	 * - self::FLAG_FLAGGED
-	 * - self::FLAG_DELETED
-	 * - self::FLAG_SEEN
-	 * - self::FLAG_DRAFT
+	 * - $this::FLAG_ANSWERED
+	 * - $this::FLAG_FLAGGED
+	 * - $this::FLAG_DELETED
+	 * - $this::FLAG_SEEN
+	 * - $this::FLAG_DRAFT
 	 * @return bool
 	 * @see: https://datatracker.ietf.org/doc/html/rfc3501#section-6.4.6
 	 */
@@ -705,7 +628,6 @@ class Mailbox {
 	 * Remove flags FLAGS data associated with a message in the selected mailbox.
 	 * @param int
 	 * @param int
-	 * - self::FLAG_NONE
 	 * - self::FLAG_ANSWERED
 	 * - self::FLAG_FLAGGED
 	 * - self::FLAG_DELETED
@@ -769,7 +691,6 @@ class Mailbox {
 	 * Replace FLAGS data associated with a message in the selected mailbox.
 	 * @param int
 	 * @param int
-	 * - self::FLAG_NONE
 	 * - self::FLAG_ANSWERED
 	 * - self::FLAG_FLAGGED
 	 * - self::FLAG_DELETED
