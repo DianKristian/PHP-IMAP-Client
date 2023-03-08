@@ -6,7 +6,7 @@ The NOOP command always succeeds.  It does nothing. Since any command can return
 ```php
 $imapConnection->noop();
 ```
-Reference: [RFC 3501 section 6.1.2](https://datatracker.ietf.org/doc/html/rfc3501#section-6.1.2)
+Reference: [RFC3501 section 6.1.2](https://datatracker.ietf.org/doc/html/rfc3501#section-6.1.2)
 ## authenticate
 https://datatracker.ietf.org/doc/html/rfc3501#section-6.2.2
 ```php
