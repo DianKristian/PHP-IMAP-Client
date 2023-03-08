@@ -1,1 +1,2 @@
 # PHP-IMAP-Client
+## Requirements
