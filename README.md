@@ -7,12 +7,14 @@ The NOOP command always succeeds.  It does nothing. Since any command can return
 $imapConnection->noop();
 ```
 Reference: [RFC3501 section 6.1.2](https://datatracker.ietf.org/doc/html/rfc3501#section-6.1.2)
+
 ## authenticate
-https://datatracker.ietf.org/doc/html/rfc3501#section-6.2.2
+Indicates a SASL authentication mechanism to the server. If the server supports the requested authentication mechanism, it performs an authentication protocol exchange to authenticate and identify the client.
 ```php
 $imapConnection->authenticate();
 ```
-Indicates a SASL authentication mechanism to the server. If the server supports the requested authentication mechanism, it performs an authentication protocol exchange to authenticate and identify the client.
+Reference: [RFC3501 section 6.2.2](https://datatracker.ietf.org/doc/html/rfc3501#section-6.2.2)
+
 ## logout
 https://datatracker.ietf.org/doc/html/rfc3501#section-6.1.3
 ```php
