@@ -9,7 +9,7 @@ $imapConnection->noop();
 **Reference:** [RFC3501 section 6.1.2](https://datatracker.ietf.org/doc/html/rfc3501#section-6.1.2)
 
 ### authenticate
-Indicates a Simple Authentication and Security Layer (SASL) authentication mechanism to the server. If the server supports the requested authentication mechanism, it performs an authentication protocol exchange to authenticate and identify the client.
+Indicates a [SASL[(https://datatracker.ietf.org/doc/html/rfc2222) authentication mechanism to the server. If the server supports the requested authentication mechanism, it performs an authentication protocol exchange to authenticate and identify the client.
 ```php
 $imapConnection->authenticate();
 ```
